@@ -772,7 +772,6 @@ git commit -m "feat: orchestrator — sorgu fallback'i, throttle, in-flight dedu
   "name": "Fiyat Karşılaştırma — Epey",
   "version": "0.1.0",
   "description": "Ürün sayfasında aynı ürünün diğer mağazalardaki fiyatlarını Epey verisiyle gösterir. Hiçbir kullanıcı verisi toplamaz.",
-  "default_locale": null,
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
@@ -808,8 +807,6 @@ git commit -m "feat: orchestrator — sorgu fallback'i, throttle, in-flight dedu
   "permissions": ["storage"]
 }
 ```
-
-Not: `"default_locale": null` GEÇERSİZDİR — bu satırı manifest'e YAZMA (üstteki blok yazım hatası içermesin diye buradan uyarılıyor; final dosyada `default_locale` anahtarı hiç olmayacak).
 
 - [ ] **Step 2: service-worker.js yaz** — `extension/background/service-worker.js`
 
@@ -887,3 +884,1090 @@ Expected: `{ ok: true, data: { productName: "Apple iPhone 15 Pro", offers: [...]
 git add extension/manifest.json extension/background/service-worker.js extension/content/loader.js
 git commit -m "feat: MV3 manifest, service worker mesaj katmanı, content loader"
 ```
+
+---
+
+### Task 6: DOM yardımcıları + adapter grubu A (Hepsiburada, Trendyol, Amazon TR)
+
+**Files:**
+- Create: `extension/content/adapters/dom-utils.js`, `extension/content/adapters/hepsiburada.js`, `extension/content/adapters/trendyol.js`, `extension/content/adapters/amazon.js`
+- Create: `tests/adapters.test.mjs`, `tests/fixtures/adapters/hepsiburada.html`, `tests/fixtures/adapters/trendyol.html`, `tests/fixtures/adapters/amazon.html`
+
+**Interfaces:**
+- Consumes: —
+- Produces: Adapter arayüzü (tüm adapter'lar aynı): `{ hosts: string[], extractProduct(document, location): { title: string, sku: string|null, approximate: boolean, titleEl: Element } | null }`. `location` yalnızca `pathname` alanı kullanılan URL benzeri nesne (testte `new URL(...)`). Ürün sayfası değilse veya başlık bulunamazsa `null`.
+- dom-utils: `cleanText(s): string`, `decodeHtmlEntities(s): string`, `jsonLdProducts(document): object[]`.
+
+- [ ] **Step 1: Fixture'ları yaz** (2026-07-16 canlı doğrulamasındaki gerçek yapılara göre)
+
+`tests/fixtures/adapters/hepsiburada.html` — HB'de Product JSON-LD YOK, h1 + URL SKU'su kullanılır:
+
+```html
+<!DOCTYPE html>
+<html><head>
+<script type="application/ld+json">{"@type":"WebPage","name":"Apple iPhone 15 128 GB Siyah"}</script>
+</head><body>
+<h1 id="product-name">Apple iPhone 15 128 GB Siyah</h1>
+</body></html>
+```
+
+`tests/fixtures/adapters/trendyol.html` — temiz Product JSON-LD var:
+
+```html
+<!DOCTYPE html>
+<html><head>
+<script type="application/ld+json">{"@type":"Product","name":"Apple iPhone 15 128 GB Siyah","sku":"762254878","brand":{"@type":"Brand","name":"Apple"}}</script>
+</head><body>
+<h1 class="pr-new-br">Apple iPhone 15 128 GB Siyah - Fiyatı, Yorumları</h1>
+</body></html>
+```
+
+`tests/fixtures/adapters/amazon.html` — JSON-LD yok, `#productTitle` var:
+
+```html
+<!DOCTYPE html>
+<html><body>
+<div id="title"><span id="productTitle">
+        Apple iPhone 15 (128 GB) - Siyah
+      </span></div>
+</body></html>
+```
+
+- [ ] **Step 2: Başarısız testleri yaz** — `tests/adapters.test.mjs`
+
+```js
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { JSDOM } from "jsdom";
+import { cleanText, decodeHtmlEntities, jsonLdProducts } from "../extension/content/adapters/dom-utils.js";
+import { hepsiburada } from "../extension/content/adapters/hepsiburada.js";
+import { trendyol } from "../extension/content/adapters/trendyol.js";
+import { amazon } from "../extension/content/adapters/amazon.js";
+
+function load(fixture, url) {
+  const html = readFileSync(new URL(`./fixtures/adapters/${fixture}`, import.meta.url), "utf8");
+  const dom = new JSDOM(html, { url });
+  return { document: dom.window.document, location: new URL(url) };
+}
+
+test("cleanText whitespace yığınlarını teke indirir", () => {
+  assert.equal(cleanText("  Apple\n\t\t iPhone  17 "), "Apple iPhone 17");
+});
+
+test("decodeHtmlEntities sayısal/hex entity'leri çözer", () => {
+  assert.equal(decodeHtmlEntities("Ak&#x131;ll&#x131; &amp; h&#252;zme"), "Akıllı & hüzme");
+});
+
+test("jsonLdProducts yalnızca Product tipini döner, bozuk JSON'u yok sayar", () => {
+  const dom = new JSDOM(`
+    <script type="application/ld+json">{"@type":"WebPage","name":"x"}</script>
+    <script type="application/ld+json">BOZUK{{{</script>
+    <script type="application/ld+json">[{"@type":"Product","name":"P1","sku":"1"}]</script>
+  `);
+  const prods = jsonLdProducts(dom.window.document);
+  assert.equal(prods.length, 1);
+  assert.equal(prods[0].name, "P1");
+});
+
+test("hepsiburada: h1 + URL'den SKU", () => {
+  const { document, location } = load(
+    "hepsiburada.html",
+    "https://www.hepsiburada.com/apple-iphone-15-128-gb-siyah-p-HBCV00004X9ZCH"
+  );
+  const p = hepsiburada.extractProduct(document, location);
+  assert.equal(p.title, "Apple iPhone 15 128 GB Siyah");
+  assert.equal(p.sku, "HBCV00004X9ZCH");
+  assert.equal(p.approximate, false);
+  assert.equal(p.titleEl.tagName, "H1");
+});
+
+test("hepsiburada: ürün olmayan sayfada null", () => {
+  const { document, location } = load("hepsiburada.html", "https://www.hepsiburada.com/telefonlar-c-371965");
+  assert.equal(hepsiburada.extractProduct(document, location), null);
+});
+
+test("trendyol: başlık JSON-LD'den (SEO'lu h1'den değil), sku JSON-LD'den", () => {
+  const { document, location } = load(
+    "trendyol.html",
+    "https://www.trendyol.com/apple/iphone-15-128-gb-siyah-p-762254878"
+  );
+  const p = trendyol.extractProduct(document, location);
+  assert.equal(p.title, "Apple iPhone 15 128 GB Siyah");
+  assert.equal(p.sku, "762254878");
+  assert.equal(p.approximate, false);
+});
+
+test("amazon: #productTitle + /dp/ ASIN", () => {
+  const { document, location } = load(
+    "amazon.html",
+    "https://www.amazon.com.tr/Apple-iPhone-15-128-GB/dp/B0CHXCFS1J?th=1"
+  );
+  const p = amazon.extractProduct(document, location);
+  assert.equal(p.title, "Apple iPhone 15 (128 GB) - Siyah");
+  assert.equal(p.sku, "B0CHXCFS1J");
+  assert.equal(p.titleEl.id, "title");
+});
+
+test("amazon: dp olmayan sayfada null", () => {
+  const { document, location } = load("amazon.html", "https://www.amazon.com.tr/s?k=iphone");
+  assert.equal(amazon.extractProduct(document, location), null);
+});
+```
+
+- [ ] **Step 3: Testlerin başarısız olduğunu doğrula**
+
+Run: `npm test`
+Expected: FAIL — `Cannot find module .../adapters/dom-utils.js`
+
+- [ ] **Step 4: dom-utils.js yaz** — `extension/content/adapters/dom-utils.js`
+
+```js
+export function cleanText(s) {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
+
+export function decodeHtmlEntities(s) {
+  return (s || "")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+// Sayfadaki tüm JSON-LD bloklarından @type: Product olanları toplar (@graph dahil).
+export function jsonLdProducts(document) {
+  const out = [];
+  const collect = (item) => {
+    if (!item || typeof item !== "object") return;
+    const types = [].concat(item["@type"] || []);
+    if (types.includes("Product")) out.push(item);
+    if (Array.isArray(item["@graph"])) item["@graph"].forEach(collect);
+  };
+  for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+    try {
+      const parsed = JSON.parse(script.textContent);
+      (Array.isArray(parsed) ? parsed : [parsed]).forEach(collect);
+    } catch {
+      /* bozuk JSON-LD yok sayılır */
+    }
+  }
+  return out;
+}
+```
+
+- [ ] **Step 5: Üç adapter'ı yaz**
+
+`extension/content/adapters/hepsiburada.js`:
+
+```js
+import { cleanText } from "./dom-utils.js";
+
+// Hepsiburada'da Product JSON-LD yok (yalnız WebPage+Review — 2026-07-16 doğrulandı).
+// Sinyal: h1 metni + URL sonundaki "-p-<SKU>".
+export const hepsiburada = {
+  hosts: ["hepsiburada.com"],
+  extractProduct(document, location) {
+    const sku = (location.pathname.match(/-p-([A-Za-z0-9]+)$/) || [])[1] || null;
+    if (!sku) return null;
+    const h1 = document.querySelector("h1");
+    const title = h1 && cleanText(h1.textContent);
+    if (!title) return null;
+    return { title, sku, approximate: false, titleEl: h1 };
+  },
+};
+```
+
+`extension/content/adapters/trendyol.js`:
+
+```js
+import { cleanText, jsonLdProducts } from "./dom-utils.js";
+
+// Trendyol'da temiz Product JSON-LD var (name, sku — 2026-07-16 doğrulandı).
+export const trendyol = {
+  hosts: ["trendyol.com"],
+  extractProduct(document, location) {
+    if (!/-p-\d+/.test(location.pathname)) return null;
+    const h1 = document.querySelector("h1");
+    if (!h1) return null;
+    const ld = jsonLdProducts(document)[0];
+    const title = cleanText((ld && ld.name) || h1.textContent);
+    if (!title) return null;
+    const sku = (ld && ld.sku && String(ld.sku)) || (location.pathname.match(/-p-(\d+)/) || [])[1] || null;
+    return { title, sku, approximate: !ld, titleEl: h1 };
+  },
+};
+```
+
+`extension/content/adapters/amazon.js`:
+
+```js
+import { cleanText } from "./dom-utils.js";
+
+// Amazon TR'de JSON-LD yok (2026-07-16 doğrulandı). Sinyal: #productTitle + /dp/<ASIN>.
+export const amazon = {
+  hosts: ["amazon.com.tr"],
+  extractProduct(document, location) {
+    const asin = (location.pathname.match(/\/dp\/([A-Z0-9]{10})/i) || [])[1] || null;
+    if (!asin) return null;
+    const titleSpan = document.querySelector("#productTitle") || document.querySelector("h1");
+    const title = titleSpan && cleanText(titleSpan.textContent);
+    if (!title) return null;
+    const titleEl = document.querySelector("#title") || titleSpan;
+    return { title, sku: asin, approximate: false, titleEl };
+  },
+};
+```
+
+- [ ] **Step 6: Testleri çalıştır**
+
+Run: `npm test`
+Expected: adapters.test.mjs 8 test PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add extension/content/adapters/ tests/adapters.test.mjs tests/fixtures/adapters/
+git commit -m "feat: DOM yardımcıları + Hepsiburada/Trendyol/Amazon adapter'ları"
+```
+
+---
+
+### Task 7: Adapter grubu B (n11, Teknosa, Vatan) + adapter kaydı
+
+**Files:**
+- Create: `extension/content/adapters/n11.js`, `extension/content/adapters/teknosa.js`, `extension/content/adapters/vatan.js`, `extension/content/adapters/index.js`
+- Create: `tests/fixtures/adapters/n11.html`, `tests/fixtures/adapters/teknosa.html`, `tests/fixtures/adapters/vatan.html`
+- Modify: `tests/adapters.test.mjs` (testler eklenir)
+
+**Interfaces:**
+- Consumes: Task 6'daki adapter arayüzü ve dom-utils.
+- Produces: `adapterFor(hostname: string): Adapter | null` (index.js) — content/main.js bunu kullanır.
+
+- [ ] **Step 1: Fixture'ları yaz**
+
+`tests/fixtures/adapters/n11.html` — JSON-LD sku sağlam, `name` SEO kirli → başlık h1'den:
+
+```html
+<!DOCTYPE html>
+<html><head>
+<script type="application/ld+json">{"@type":"Product","name":"Apple iPhone 15 128 GB (Apple Türkiye Garantili) Siyah 128 GB Fiyatları ve Özellikleri","sku":"127272069922","brand":"Apple"}</script>
+</head><body>
+<h1 class="proName">Apple iPhone 15 128 GB (Apple Türkiye Garantili)</h1>
+</body></html>
+```
+
+`tests/fixtures/adapters/teknosa.html` — JSON-LD yok; h1 içinde satır sonu/tab kirliliği (gerçek sayfadaki gibi):
+
+```html
+<!DOCTYPE html>
+<html><body>
+<h1>Apple
+					 iPhone 17 256GB Beyaz Akıllı Telefon</h1>
+</body></html>
+```
+
+`tests/fixtures/adapters/vatan.html` — JSON-LD var ama `name` HTML entity'li (script içi entity decode edilmez):
+
+```html
+<!DOCTYPE html>
+<html><head>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Product","name":"iPhone 17 256 GB Ak&#x131;ll&#x131; Telefon Siyah","mpn":"MG6J4TU/A","sku":"153221","brand":"APPLE"}</script>
+</head><body>
+<h1>iPhone 17 256 GB Akıllı Telefon Siyah</h1>
+</body></html>
+```
+
+- [ ] **Step 2: Başarısız testleri ekle** — `tests/adapters.test.mjs` dosyasının sonuna:
+
+```js
+import { n11 } from "../extension/content/adapters/n11.js";
+import { teknosa } from "../extension/content/adapters/teknosa.js";
+import { vatan } from "../extension/content/adapters/vatan.js";
+import { adapterFor } from "../extension/content/adapters/index.js";
+
+test("n11: başlık h1'den (SEO'lu JSON-LD name'den değil), sku JSON-LD'den", () => {
+  const { document, location } = load(
+    "n11.html",
+    "https://www.n11.com/urun/apple-iphone-15-128-gb-apple-turkiye-garantili-43821353"
+  );
+  const p = n11.extractProduct(document, location);
+  assert.equal(p.title, "Apple iPhone 15 128 GB (Apple Türkiye Garantili)");
+  assert.equal(p.sku, "127272069922");
+});
+
+test("n11: /urun/ dışı sayfada null", () => {
+  const { document, location } = load("n11.html", "https://www.n11.com/arama?q=iphone");
+  assert.equal(n11.extractProduct(document, location), null);
+});
+
+test("teknosa: h1'deki whitespace kirliliği temizlenir, sku URL'den", () => {
+  const { document, location } = load(
+    "teknosa.html",
+    "https://www.teknosa.com/apple-iphone-17-256gb-beyaz-akilli-telefon-p-100000058783"
+  );
+  const p = teknosa.extractProduct(document, location);
+  assert.equal(p.title, "Apple iPhone 17 256GB Beyaz Akıllı Telefon");
+  assert.equal(p.sku, "100000058783");
+});
+
+test("vatan: JSON-LD name'deki HTML entity'ler çözülür", () => {
+  const { document, location } = load(
+    "vatan.html",
+    "https://www.vatanbilgisayar.com/iphone-17-akilli-telefon.html"
+  );
+  const p = vatan.extractProduct(document, location);
+  assert.equal(p.title, "iPhone 17 256 GB Akıllı Telefon Siyah");
+  assert.equal(p.sku, "153221");
+  assert.equal(p.approximate, false);
+});
+
+test("adapterFor hostname'i doğru adapter'a eşler", () => {
+  assert.equal(adapterFor("www.hepsiburada.com"), hepsiburada);
+  assert.equal(adapterFor("www.trendyol.com"), trendyol);
+  assert.equal(adapterFor("www.amazon.com.tr"), amazon);
+  assert.equal(adapterFor("www.n11.com"), n11);
+  assert.equal(adapterFor("www.teknosa.com"), teknosa);
+  assert.equal(adapterFor("www.vatanbilgisayar.com"), vatan);
+  assert.equal(adapterFor("www.baskasite.com"), null);
+});
+```
+
+- [ ] **Step 3: Testlerin başarısız olduğunu doğrula**
+
+Run: `npm test`
+Expected: FAIL — `Cannot find module .../adapters/n11.js`
+
+- [ ] **Step 4: Üç adapter + index'i yaz**
+
+`extension/content/adapters/n11.js`:
+
+```js
+import { cleanText, jsonLdProducts } from "./dom-utils.js";
+
+// n11: JSON-LD sku sağlam ama name SEO metni içeriyor ("... Fiyatları ve Özellikleri"
+// — 2026-07-16 doğrulandı). Başlık h1'den alınır.
+export const n11 = {
+  hosts: ["n11.com"],
+  extractProduct(document, location) {
+    if (!location.pathname.startsWith("/urun/")) return null;
+    const h1 = document.querySelector("h1");
+    const title = h1 && cleanText(h1.textContent);
+    if (!title) return null;
+    const ld = jsonLdProducts(document)[0];
+    const sku = (ld && ld.sku && String(ld.sku)) || (location.pathname.match(/-(\d+)$/) || [])[1] || null;
+    return { title, sku, approximate: false, titleEl: h1 };
+  },
+};
+```
+
+`extension/content/adapters/teknosa.js`:
+
+```js
+import { cleanText } from "./dom-utils.js";
+
+// Teknosa'da Product JSON-LD yok (2026-07-16 doğrulandı). h1 + URL "-p-<sayı>".
+export const teknosa = {
+  hosts: ["teknosa.com"],
+  extractProduct(document, location) {
+    const sku = (location.pathname.match(/-p-(\d+)$/) || [])[1] || null;
+    if (!sku) return null;
+    const h1 = document.querySelector("h1");
+    const title = h1 && cleanText(h1.textContent);
+    if (!title) return null;
+    return { title, sku, approximate: false, titleEl: h1 };
+  },
+};
+```
+
+`extension/content/adapters/vatan.js`:
+
+```js
+import { cleanText, decodeHtmlEntities, jsonLdProducts } from "./dom-utils.js";
+
+// Vatan: tam Product JSON-LD (name+mpn+sku) ama name HTML entity'li gelir
+// (2026-07-16 doğrulandı). JSON-LD yoksa ürün sayfası değildir → null.
+export const vatan = {
+  hosts: ["vatanbilgisayar.com"],
+  extractProduct(document, location) {
+    if (!location.pathname.endsWith(".html")) return null;
+    const ld = jsonLdProducts(document)[0];
+    if (!ld || !ld.name) return null;
+    const h1 = document.querySelector("h1");
+    if (!h1) return null;
+    const title = cleanText(decodeHtmlEntities(ld.name));
+    if (!title) return null;
+    const sku = (ld.sku && String(ld.sku)) || (ld.mpn && String(ld.mpn)) || null;
+    return { title, sku, approximate: false, titleEl: h1 };
+  },
+};
+```
+
+`extension/content/adapters/index.js`:
+
+```js
+import { hepsiburada } from "./hepsiburada.js";
+import { trendyol } from "./trendyol.js";
+import { amazon } from "./amazon.js";
+import { n11 } from "./n11.js";
+import { teknosa } from "./teknosa.js";
+import { vatan } from "./vatan.js";
+
+const ADAPTERS = [hepsiburada, trendyol, amazon, n11, teknosa, vatan];
+
+export function adapterFor(hostname) {
+  const h = (hostname || "").replace(/^www\./, "");
+  return ADAPTERS.find((a) => a.hosts.some((host) => h === host || h.endsWith("." + host))) || null;
+}
+```
+
+- [ ] **Step 5: Testleri çalıştır**
+
+Run: `npm test`
+Expected: adapters.test.mjs 13 test PASS (8 + 5 yeni).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add extension/content/adapters/ tests/adapters.test.mjs tests/fixtures/adapters/
+git commit -m "feat: n11/Teknosa/Vatan adapter'ları + hostname kaydı"
+```
+
+---
+
+### Task 8: format.js — fiyat/zaman formatı, gruplama, kart HTML'i (saf)
+
+**Files:**
+- Create: `extension/content/format.js`, `tests/format.test.mjs`
+
+**Interfaces:**
+- Consumes: Task 2'deki `Offer` şekli (`{merchant, merchantDomain, seller, price, secondHand, freeShipping, updated, merchantUrl}`).
+- Produces (badge.js kullanır):
+  - `formatTL(n: number): string` — "67.953,90 TL"
+  - `updatedText(fetchedAt: number, now?: number): string` — "az önce güncellendi" / "X dakika önce güncellendi" / "X saat önce güncellendi" (spec §7 metni)
+  - `groupOffers(offers): { newOffers, usedOffers, siteCount, cheapest }` — siteCount = benzersiz `merchantDomain` sayısı; `cheapest` = en ucuz sıfır teklif (sıfır yoksa en ucuz 2.el)
+  - `escapeHtml(s): string`
+  - `renderCard(data, groups, now?): string` — kartın iç HTML'i (tamamı escape'li)
+
+- [ ] **Step 1: Başarısız testleri yaz** — `tests/format.test.mjs`
+
+```js
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { formatTL, updatedText, groupOffers, escapeHtml, renderCard } from "../extension/content/format.js";
+
+const OFFERS = [
+  { merchant: "Trendyol", merchantDomain: "trendyol.com", merchantUrl: "https://www.trendyol.com/x", seller: "Getmobil", price: 59488.05, secondHand: true, freeShipping: true, updated: "2 saat önce" },
+  { merchant: "PTT AVM", merchantDomain: "pttavm.com", merchantUrl: "https://www.pttavm.com/y", seller: "BVBMARKET", price: 67953.9, secondHand: false, freeShipping: true, updated: "7 saat önce" },
+  { merchant: "Hepsiburada", merchantDomain: "hepsiburada.com", merchantUrl: "https://www.hepsiburada.com/z", seller: null, price: 114000, secondHand: false, freeShipping: true, updated: "25 dk önce" },
+];
+
+test("formatTL Türkçe biçimde yazar", () => {
+  assert.equal(formatTL(67953.9), "67.953,90 TL");
+  assert.equal(formatTL(1234), "1.234,00 TL");
+});
+
+test("updatedText spec §7 metnini üretir", () => {
+  const t0 = 1_000_000_000;
+  assert.equal(updatedText(t0, t0 + 20_000), "az önce güncellendi");
+  assert.equal(updatedText(t0, t0 + 5 * 60_000), "5 dakika önce güncellendi");
+  assert.equal(updatedText(t0, t0 + 3 * 3_600_000), "3 saat önce güncellendi");
+});
+
+test("groupOffers sıfır/2.el ayırır, siteCount benzersiz domain sayar, cheapest sıfırdan seçilir", () => {
+  const g = groupOffers(OFFERS);
+  assert.equal(g.newOffers.length, 2);
+  assert.equal(g.usedOffers.length, 1);
+  assert.equal(g.siteCount, 3);
+  assert.equal(g.cheapest.price, 67953.9); // 2.el 59.488'e rağmen en ucuz SIFIR vurgulanır
+});
+
+test("escapeHtml beş özel karakteri kaçırır", () => {
+  assert.equal(escapeHtml(`<a b="c">'&`), "&lt;a b=&quot;c&quot;&gt;&#39;&amp;");
+});
+
+test("renderCard: en ucuz vurgulu, 2.el ayrı bölümde, alt bilgi ve Epey linki var", () => {
+  const data = {
+    productName: "Apple iPhone 15 Pro",
+    epeyUrl: "https://www.epey.com/akilli-telefonlar/apple-iphone-15-pro.html",
+    offers: OFFERS,
+    approximate: false,
+    fetchedAt: 1_000_000_000,
+  };
+  const html = renderCard(data, groupOffers(data.offers), 1_000_000_000 + 5 * 60_000);
+  assert.ok(html.includes("67.953,90 TL"));
+  assert.ok(html.includes('class="row best"')); // en ucuz sıfır vurgusu
+  assert.ok(html.includes("2. el / Outlet"));
+  assert.ok(html.includes("Epey verisiyle · 5 dakika önce güncellendi"));
+  assert.ok(html.includes(escapeHtml(data.epeyUrl)) || html.includes(data.epeyUrl));
+  assert.ok(!html.includes("<script")); // içerik enjeksiyonu yok
+});
+
+test("renderCard mağaza adındaki HTML'i etkisizleştirir", () => {
+  const kotu = { ...OFFERS[1], merchant: `<img src=x onerror=alert(1)>` };
+  const data = { productName: "X", epeyUrl: "https://www.epey.com/x.html", offers: [kotu], approximate: false, fetchedAt: 0 };
+  const html = renderCard(data, groupOffers(data.offers), 0);
+  assert.ok(!html.includes("<img src=x"));
+  assert.ok(html.includes("&lt;img"));
+});
+```
+
+- [ ] **Step 2: Testlerin başarısız olduğunu doğrula**
+
+Run: `npm test`
+Expected: FAIL — `Cannot find module .../extension/content/format.js`
+
+- [ ] **Step 3: Modülü yaz** — `extension/content/format.js`
+
+```js
+// Saf sunum yardımcıları — DOM'a dokunmaz, Node'da test edilir.
+
+export function formatTL(n) {
+  return n.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " TL";
+}
+
+export function updatedText(fetchedAt, now = Date.now()) {
+  const dk = Math.floor((now - fetchedAt) / 60000);
+  if (dk < 1) return "az önce güncellendi";
+  if (dk < 60) return `${dk} dakika önce güncellendi`;
+  return `${Math.floor(dk / 60)} saat önce güncellendi`;
+}
+
+// Teklifleri sıfır/2.el olarak ayırır. "N mağazada" sayısı benzersiz mağaza
+// domain'i üzerinden (aynı mağazanın farklı satıcıları tek sayılır — spec §7).
+// "En ucuz" vurgusu sıfır ürünler arasından seçilir.
+export function groupOffers(offers) {
+  const newOffers = offers.filter((o) => !o.secondHand);
+  const usedOffers = offers.filter((o) => o.secondHand);
+  const domains = new Set(offers.map((o) => o.merchantDomain).filter(Boolean));
+  return {
+    newOffers,
+    usedOffers,
+    siteCount: domains.size,
+    cheapest: newOffers[0] || usedOffers[0] || null,
+  };
+}
+
+export function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+function offerRow(o, isBest) {
+  const ad = o.seller && o.seller !== o.merchant ? `${o.merchant} · ${o.seller}` : o.merchant;
+  return `<li class="row${isBest ? " best" : ""}">
+    <a href="${escapeHtml(o.merchantUrl)}" target="_blank" rel="noopener noreferrer">
+      <span class="m">${escapeHtml(ad)}</span>
+      <span class="p">${escapeHtml(formatTL(o.price))}</span>
+    </a>
+  </li>`;
+}
+
+const MAX_ROWS = 8;
+
+export function renderCard(data, groups, now = Date.now()) {
+  const yeni = groups.newOffers.slice(0, MAX_ROWS).map((o) => offerRow(o, o === groups.cheapest)).join("");
+  const ikinciEl = groups.usedOffers
+    .slice(0, 3)
+    .map((o) => offerRow(o, groups.newOffers.length === 0 && o === groups.cheapest))
+    .join("");
+  return `
+    <div class="hdr">
+      <a href="${escapeHtml(data.epeyUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(data.productName)}</a>
+      ${data.approximate ? '<span class="approx" title="Yaklaşık eşleşme — varyant birebir olmayabilir">≈ yaklaşık eşleşme</span>' : ""}
+    </div>
+    ${yeni ? `<ul class="list">${yeni}</ul>` : ""}
+    ${ikinciEl ? `<div class="sub">2. el / Outlet</div><ul class="list">${ikinciEl}</ul>` : ""}
+    <div class="foot">
+      <span>Epey verisiyle · ${escapeHtml(updatedText(data.fetchedAt, now))}</span>
+      <a href="${escapeHtml(data.epeyUrl)}" target="_blank" rel="noopener noreferrer">Tüm fiyatlar →</a>
+    </div>`;
+}
+```
+
+- [ ] **Step 4: Testleri çalıştır**
+
+Run: `npm test`
+Expected: format.test.mjs 6 test PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add extension/content/format.js tests/format.test.mjs
+git commit -m "feat: sunum yardımcıları — TL formatı, gruplama, escape'li kart HTML'i"
+```
+
+---
+
+### Task 9: Rozet + kart UI (badge.js, main.js) ve manuel smoke
+
+**Files:**
+- Create: `extension/content/badge.js`, `extension/content/main.js`
+
+**Interfaces:**
+- Consumes: Task 7 `adapterFor`; Task 8 `renderCard, groupOffers`; Task 5 mesaj sözleşmesi (`FK_GET_OFFERS`).
+- Produces: `mountBadge(titleEl, data)`, `removeBadge()`. UI dışa hiçbir şey sızdırmaz (Shadow DOM, closed).
+
+- [ ] **Step 1: badge.js yaz** — `extension/content/badge.js`
+
+```js
+import { groupOffers, renderCard } from "./format.js";
+
+const HOST_ID = "fk-epey-badge-host";
+
+const CSS = `
+  :host { all: initial; }
+  .badge {
+    all: initial; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+    font: 600 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #0b57d0; background: #e8f0fe; border: 1px solid #c2d7fe;
+    border-radius: 999px; padding: 5px 10px; white-space: nowrap;
+  }
+  .badge:hover { background: #d8e5fd; }
+  .card {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 2147483647;
+    min-width: 300px; max-width: 380px; max-height: 420px; overflow-y: auto;
+    background: #fff; color: #1a1a1a; border: 1px solid #dadce0; border-radius: 10px;
+    box-shadow: 0 4px 18px rgba(0,0,0,.15); padding: 10px 12px;
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .hdr { font-weight: 700; margin-bottom: 6px; }
+  .hdr a { color: inherit; text-decoration: none; }
+  .approx { display: inline-block; margin-left: 6px; font-weight: 400; font-size: 11px; color: #b06000; }
+  .list { list-style: none; margin: 0; padding: 0; }
+  .row a { display: flex; justify-content: space-between; gap: 12px; padding: 5px 6px;
+           color: inherit; text-decoration: none; border-radius: 6px; }
+  .row a:hover { background: #f1f3f4; }
+  .row .p { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .row.best a { background: #e6f4ea; }
+  .row.best .p { color: #137333; }
+  .sub { margin: 8px 0 2px; font-size: 11px; font-weight: 700; color: #5f6368; text-transform: uppercase; }
+  .foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px;
+          padding-top: 8px; border-top: 1px solid #eee; font-size: 11px; color: #5f6368; }
+  .foot a { color: #0b57d0; text-decoration: none; }
+`;
+
+export function removeBadge() {
+  const eski = document.getElementById(HOST_ID);
+  if (eski) eski.remove();
+}
+
+export function mountBadge(titleEl, data) {
+  removeBadge();
+  const groups = groupOffers(data.offers);
+  if (!groups.cheapest || groups.siteCount === 0) return; // sessiz (spec §7)
+
+  const host = document.createElement("span");
+  host.id = HOST_ID;
+  host.style.cssText = "display:inline-block;position:relative;margin-left:8px;vertical-align:middle;";
+  const shadow = host.attachShadow({ mode: "closed" });
+
+  const style = document.createElement("style");
+  style.textContent = CSS;
+  shadow.appendChild(style);
+
+  const badge = document.createElement("button");
+  badge.className = "badge";
+  badge.type = "button";
+  badge.textContent = `${groups.siteCount} mağazada karşılaştır${data.approximate ? " ≈" : ""}`;
+  if (data.approximate) badge.title = "Yaklaşık eşleşme — varyant birebir olmayabilir";
+  shadow.appendChild(badge);
+
+  const card = document.createElement("div");
+  card.className = "card";
+  card.hidden = true;
+  card.innerHTML = renderCard(data, groups); // içerik format.js'te tamamen escape'lenir
+  shadow.appendChild(card);
+
+  badge.addEventListener("click", (e) => {
+    e.stopPropagation();
+    card.hidden = !card.hidden;
+  });
+  card.addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => {
+    card.hidden = true;
+  });
+
+  titleEl.insertAdjacentElement("afterend", host);
+}
+```
+
+- [ ] **Step 2: main.js yaz** — `extension/content/main.js`
+
+```js
+import { adapterFor } from "./adapters/index.js";
+import { mountBadge, removeBadge } from "./badge.js";
+
+const adapter = adapterFor(location.hostname);
+let requestSeq = 0;
+
+function run() {
+  removeBadge();
+  if (!adapter) return;
+  let product;
+  try {
+    product = adapter.extractProduct(document, location);
+  } catch {
+    return; // sessiz (spec §7)
+  }
+  if (!product || !product.titleEl || !product.titleEl.isConnected) return;
+
+  const seq = ++requestSeq;
+  chrome.runtime.sendMessage(
+    {
+      type: "FK_GET_OFFERS",
+      product: { title: product.title, sku: product.sku, approximate: product.approximate },
+    },
+    (resp) => {
+      if (chrome.runtime.lastError) return;         // SW yok/uyandırılamadı → sessiz
+      if (seq !== requestSeq) return;               // bu arada sayfa değişti
+      if (!resp || !resp.ok || !resp.data || !Array.isArray(resp.data.offers) || resp.data.offers.length === 0) return;
+      if (!product.titleEl.isConnected) return;     // başlık DOM'dan gitmiş
+      try {
+        mountBadge(product.titleEl, resp.data);
+      } catch {
+        /* sessiz */
+      }
+    }
+  );
+}
+
+// SPA gezinmeleri (Trendyol, n11 ürün→ürün geçişleri): URL'i hafifçe izle.
+let lastHref = location.href;
+setInterval(() => {
+  if (location.href !== lastHref) {
+    lastHref = location.href;
+    requestSeq++; // bekleyen cevapları geçersiz kıl
+    removeBadge();
+    setTimeout(run, 1200); // yeni sayfanın DOM'u otursun
+  }
+}, 1000);
+
+run();
+```
+
+- [ ] **Step 3: Tüm testlerin hâlâ geçtiğini doğrula**
+
+Run: `npm test`
+Expected: tüm testler PASS (UI dosyaları test kapsamı dışında ama import zinciri kırılmamalı — adapters/format testleri geçiyor olmalı).
+
+- [ ] **Step 4: Manuel smoke (2 sitede)**
+
+1. `chrome://extensions` → uzantıda "Yeniden yükle".
+2. `https://www.hepsiburada.com` → herhangi bir ürün sayfası aç.
+   - Expected: başlığın yanında ≤4 sn içinde "N mağazada karşılaştır" rozeti; tıklayınca kart; en ucuz sıfır teklif yeşil vurgulu; altta "Epey verisiyle · az önce güncellendi"; sayfa konsolunda uzantı hatası yok.
+3. Sayfayı yenile.
+   - Expected: rozet bu kez ~anında (cache).
+4. Aynısını bir Trendyol ürün sayfasında doğrula (JSON-LD'li yol).
+5. Epey'de olmayacak bir üründe (örn. çok niş bir aksesuar) rozetin HİÇ görünmediğini ve konsolda hata olmadığını doğrula.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add extension/content/badge.js extension/content/main.js
+git commit -m "feat: rozet + kart UI (Shadow DOM), SPA URL izleme, sessiz hata yolu"
+```
+
+---
+
+### Task 10: 6 sitede uçtan uca doğrulama
+
+**Files:** — (kod yok; bulgular `docs/e2e-notlar.md`'ye yazılır)
+
+**Interfaces:**
+- Consumes: tamamlanmış uzantı.
+- Produces: her site için GEÇTİ/KALDI kaydı; KALDI varsa ilgili adapter task'ına dönülür.
+
+- [ ] **Step 1: Test matrisini çalıştır**
+
+Uzantıyı yeniden yükle; her sitede bir **telefon** ürün sayfası aç (Epey kapsamı en güçlü kategori) ve tabloyu doldur:
+
+| # | Site | Kontroller |
+|---|---|---|
+| 1 | hepsiburada.com | rozet ≤4 sn; kart açılır/kapanır; fiyatlar makul; en ucuz vurgusu sıfır üründe |
+| 2 | trendyol.com | aynı + ürün→ürün SPA geçişinde rozet yenileniyor |
+| 3 | amazon.com.tr | aynı + başlık `#productTitle`'dan doğru alınmış |
+| 4 | n11.com | aynı + `/urun/` dışında (arama, kategori) rozet YOK |
+| 5 | teknosa.com | aynı + başlıkta whitespace artığı yok |
+| 6 | vatanbilgisayar.com | aynı + Türkçe karakterler doğru (entity çözümü) |
+
+Ortak negatif kontroller:
+- Hedef sitelerin ana sayfa/kategori/arama sayfalarında rozet asla görünmez.
+- Sayfa konsolunda ve SW konsolunda uzantı kaynaklı hata yok.
+- `chrome://extensions` → uzantı detayında "Hatalar" bölümü boş.
+- Aynı ürüne 45 dk içinde tekrar girildiğinde SW ağ sekmesinde yeni Epey isteği YOK (cache).
+- Yanlış model eşleşmesi kontrolü: bir iPhone 15 sayfasında karttaki ürün adının "iPhone 15" ailesinden olduğu (12/11 değil) gözle doğrulanır.
+
+- [ ] **Step 2: Bulguları kaydet ve commit**
+
+`docs/e2e-notlar.md`'ye tarih + tablo sonuçları + görülen tuhaflıklar yazılır.
+
+```bash
+git add docs/e2e-notlar.md
+git commit -m "test: 6 site uçtan uca doğrulama notları"
+```
+
+---
+
+### Task 11: README + Gizlilik Politikası
+
+**Files:**
+- Create: `README.md` (kök), `docs/PRIVACY.md`
+
+**Interfaces:** — (metin; spec §1-2'nin zorunlu kıldığı içerik)
+
+- [ ] **Step 1: README.md yaz** — kök dizine:
+
+```markdown
+# Fiyat Karşılaştırma — Epey
+
+Türkiye'deki büyük e-ticaret sitelerinde gezerken, baktığınız ürünün diğer
+mağazalardaki fiyatlarını ürün başlığının yanında küçük bir rozetle gösteren
+Chrome uzantısı. Veriler [Epey.com](https://www.epey.com) üzerinden okunur.
+
+## Desteklenen siteler
+
+Hepsiburada · Trendyol · Amazon TR · n11 · Teknosa · Vatan Bilgisayar
+
+## Nasıl çalışır?
+
+1. Bir ürün sayfası açtığınızda uzantı, sayfadaki yapılandırılmış veriden
+   (JSON-LD) veya başlıktan ürünü tanır.
+2. Arka planda Epey'de arama yapıp en iyi eşleşen ürünün mağaza/fiyat
+   listesini çeker (sonuçlar 45 dakika önbelleklenir).
+3. Başlığın yanında "N mağazada karşılaştır" rozeti belirir; tıklayınca
+   mağaza-fiyat listesi açılır, en ucuz sıfır ürün vurgulanır, 2. el/outlet
+   teklifler ayrı gösterilir.
+
+Eşleşme birebir değilse rozette "≈" işareti görürsünüz — bu, gösterilen
+fiyatların ürünün farklı bir varyantına (kapasite/renk) ait olabileceği
+anlamına gelir.
+
+## Önemli: veri kaynağı hakkında
+
+Epey **resmi bir API sağlamaz**; bu uzantı Epey'in herkese açık HTML
+sayfalarını okuyarak çalışır. Epey sayfa yapısını değiştirirse uzantı
+**herhangi bir anda çalışmayı durdurabilir**. Böyle bir durumda rozet
+sessizce görünmez olur — sayfanızı asla bozmaz.
+
+Bu araç Epey ile bağlantılı/onaylı değildir. Epey'e gereksiz yük
+bindirmemek için istekler seyreltilir (throttle) ve önbelleklenir.
+
+## Gizlilik
+
+Hiçbir kullanıcı verisi toplanmaz, hiçbir analytics/izleme kodu yoktur.
+Ayrıntılar: [docs/PRIVACY.md](docs/PRIVACY.md)
+
+## Geliştirme
+
+```bash
+npm install
+npm test          # parser/adapter/cache testleri (Node, ağ erişimi gerektirmez)
+```
+
+Uzantıyı denemek için: `chrome://extensions` → Geliştirici modu →
+"Paketlenmemiş öğe yükle" → `extension/` klasörü.
+
+Not: Epey, tarayıcı dışı istemcilere (ör. Node/curl) Cloudflare doğrulaması
+gösterir; bu yüzden canlı istekler yalnızca uzantı bağlamında çalışır,
+testler `tests/fixtures/` altındaki kayıtlı gerçek HTML ile koşar.
+```
+
+- [ ] **Step 2: docs/PRIVACY.md yaz**
+
+```markdown
+# Gizlilik Politikası — Fiyat Karşılaştırma (Epey)
+
+Son güncelleme: 2026-07-16
+
+## Toplanan veri: YOK
+
+Bu uzantı hiçbir kişisel veri, gezinme geçmişi, tanımlayıcı veya istatistik
+**toplamaz, saklamaz, iletmez**. Analytics/izleme kodu içermez. Uzantının
+geliştiricisine hiçbir veri gönderilmez.
+
+## Uzantı ne yapar?
+
+- Yalnızca desteklenen alışveriş sitelerinin **ürün sayfalarında**, sayfada
+  zaten görünen ürün başlığını okur.
+- Bu başlığı arama sorgusu olarak **yalnızca epey.com'a** gönderir (ör.
+  "apple iphone 15 128gb"). Bu istek, tarayıcınızın Epey'e normal ziyareti
+  ile aynı niteliktedir ve kullanıcı kimliğinizle ilişkilendirilmez.
+- Dönen mağaza/fiyat listesini **yalnızca kendi cihazınızda**
+  (`chrome.storage.local`) 45 dakika önbellekler. Bu veri cihazınızdan çıkmaz.
+
+## İzinlerin gerekçesi
+
+| İzin | Neden |
+|---|---|
+| `storage` | Fiyat sonuçlarını cihazda kısa süreli önbelleklemek |
+| `https://www.epey.com/*` | Fiyat verisini Epey'den okumak |
+| Site content script'leri | Ürün sayfasında rozeti göstermek ve ürün başlığını okumak |
+
+## Üçüncü taraflar
+
+Fiyat verisi Epey.com'dan okunur; Epey'in kendi gizlilik politikası
+epey.com'da yayımlanır. Bunun dışında hiçbir üçüncü taraf servisi
+kullanılmaz.
+
+## İletişim
+
+Sorular için: <GELİŞTİRİCİ E-POSTASI — Store başvurusundan önce doldurulacak>
+```
+
+- [ ] **Step 3: İletişim e-postasını doldur**
+
+`docs/PRIVACY.md` son satırındaki placeholder'a Store geliştirici hesabında
+kullanılacak e-posta adresi yazılır (kullanıcıya sorulur — Store'da herkese açık
+görünür, kişisel adres yerine ayrı bir adres tercih edilebilir).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add README.md docs/PRIVACY.md
+git commit -m "docs: README ve gizlilik politikası"
+```
+
+---
+
+### Task 12: Store materyalleri (ikon, listeleme metni, paket)
+
+**Files:**
+- Create: `extension/icons/make-icons.html`, `extension/icons/icon16.png`, `extension/icons/icon48.png`, `extension/icons/icon128.png`
+- Create: `docs/store/listing.md`
+- Modify: `extension/manifest.json` (icons + action)
+
+**Interfaces:** — (yayın materyali)
+
+- [ ] **Step 1: İkon üreticiyi yaz** — `extension/icons/make-icons.html`
+
+```html
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>ikon üret</title>
+<body>
+<p>Bağlantılara tıklayınca PNG iner. Üçünü de <code>extension/icons/</code> içine kaydet.</p>
+<script>
+for (const size of [16, 48, 128]) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  g.fillStyle = "#0b57d0";
+  g.beginPath();
+  g.roundRect(0, 0, size, size, size * 0.22);
+  g.fill();
+  g.fillStyle = "#fff";
+  g.font = `bold ${Math.round(size * 0.62)}px system-ui, sans-serif`;
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText("₺", size / 2, size / 2 + size * 0.04);
+  const a = document.createElement("a");
+  a.download = `icon${size}.png`;
+  a.href = c.toDataURL("image/png");
+  a.textContent = `icon${size}.png indir`;
+  a.style.display = "block";
+  document.body.appendChild(a);
+}
+</script>
+```
+
+Bu dosya Chrome'da açılır, üç PNG indirilip `extension/icons/` içine konur.
+
+- [ ] **Step 2: manifest.json'a ikonları ekle**
+
+`extension/manifest.json` köküne şu iki anahtar eklenir (mevcut anahtarlar korunur):
+
+```json
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "action": {
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png" },
+    "default_title": "Fiyat Karşılaştırma — Epey"
+  }
+```
+
+Uzantıyı yeniden yükleyip ikonun araç çubuğunda göründüğü doğrulanır.
+
+- [ ] **Step 3: Listeleme metnini yaz** — `docs/store/listing.md`
+
+```markdown
+# Chrome Web Store listeleme içeriği
+
+## Ad
+Fiyat Karşılaştırma — Epey
+
+## Kısa açıklama (≤132 karakter)
+Baktığın ürünün diğer mağazalardaki fiyatlarını ürün sayfasında anında gör. Veri toplamaz, hesap istemez.
+
+## Kategori
+Alışveriş
+
+## Uzun açıklama
+Alışveriş yaparken sekme değiştirmeden fiyat karşılaştır. Desteklenen bir
+e-ticaret sitesinde ürün sayfası açtığında, başlığın yanında "N mağazada
+karşılaştır" rozeti belirir; tıklayınca aynı ürünün diğer mağazalardaki
+fiyat listesi açılır — en ucuz sıfır ürün vurgulanır, 2. el/outlet
+teklifler ayrı gösterilir. Fiyat verisi Epey.com'dan alınır.
+
+Desteklenen siteler: Hepsiburada, Trendyol, Amazon TR, n11, Teknosa,
+Vatan Bilgisayar.
+
+• Hiçbir kullanıcı verisi toplanmaz — analytics yok, hesap yok, kayıt yok.
+• Sonuçlar 45 dakika cihazında önbellenir; gereksiz istek atılmaz.
+• Eşleşme birebir değilse rozet "≈" ile işaretlenir.
+• Sonuç yoksa hiçbir şey gösterilmez — sayfanı asla bozmaz.
+
+Not: Bu uzantı Epey.com ile bağlantılı/onaylı değildir. Fiyatlar Epey'in
+herkese açık sayfalarından okunur; kaynak yapısı değişirse gösterim geçici
+olarak durabilir.
+
+## Tek amaç (single purpose) beyanı
+Kullanıcının görüntülediği ürünün diğer mağazalardaki fiyatlarını göstermek.
+
+## İzin gerekçeleri (inceleme formu)
+- storage: fiyat sonuçlarının cihazda 45 dk önbelleklenmesi.
+- host permission (epey.com): fiyat verisinin okunması.
+- content script'ler (6 alışveriş sitesi): ürün başlığını okumak ve
+  karşılaştırma rozetini göstermek.
+
+## Veri kullanımı beyanları
+"Hiçbir kullanıcı verisi toplanmıyor" — tüm veri toplama sorularına Hayır.
+
+## Ekran görüntüleri (1280×800, çekilecekler)
+1. Hepsiburada ürün sayfası — rozet görünür halde.
+2. Aynı sayfa — kart açık, en ucuz vurgulu.
+3. Trendyol ürün sayfası — kart açık.
+4. (Opsiyonel) Vatan sayfası — "≈ yaklaşık eşleşme" örneği.
+
+## Gizlilik politikası URL'i
+Depo herkese açık yapıldığında GitHub'daki docs/PRIVACY.md linki; ya da
+GitHub Pages/Gist. (Store, herkese erişilebilir bir URL zorunlu kılar.)
+```
+
+- [ ] **Step 4: Paket oluşturmayı doğrula**
+
+PowerShell:
+
+```powershell
+Compress-Archive -Path extension\* -DestinationPath fiyat-karsilastirma-0.1.0.zip -Force
+```
+
+Expected: zip içinde `manifest.json` kökte (klasör sarmalamadan). Zip `.gitignore`'a eklenir (`*.zip`).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add extension/icons/ extension/manifest.json docs/store/listing.md .gitignore
+git commit -m "chore: ikonlar, store listeleme metni, paketleme"
+```
+
+---
+
+## Plan sonu notları
+
+- **Task sırası bağımlılıkları:** 1 → 2 → (3,) → 4 → 5 → (6 → 7) → 8 → 9 → 10 → 11 → 12. Task 3 ile 6-8 arası bağımsızdır; paralel yürütülebilir.
+- **Kapsam dışı (spec §10):** fiyat alarmı, hesap, ücretli servis, mobil — bu planda yoktur ve eklenmez.
+- **Bilinen risk:** Epey şablon değişikliği parser'ı kırar. Tüm parse yolları sessiz `null/[]` döndürür; kullanıcı sayfası hiçbir durumda bozulmaz. Kırılırsa `research/epey/` süreci tekrarlanıp yalnızca `epey.js` regex'leri güncellenir.
+- **Store inceleme notu:** başvuru formunda veri toplanmadığı beyan edilir (doğrudur); veri kaynağının iç tekniği form sorularının kapsamı dışındadır (spec §1).
+- **Spec §4 sapması (bilinçli):** Spec'teki genel öncelik listesi (JSON-LD → og → h1) 2026-07-16 canlı araştırmasıyla site-özel stratejilere somutlaştırıldı: 6 sitenin hiçbirinde og product meta'sı kullanılabilir değil (Amazon/Teknosa og:title SEO ekli), bu yüzden og katmanı atlandı. Spec'in "h1 ile bulunan ürün 'yaklaşık' işaretlensin" kuralı da şu şekilde iyileştirildi: h1'in ürün başlığının birebir kendisi olduğu doğrulanan sitelerde (HB, Amazon, Teknosa) adapter `approximate:false` der; "≈" işareti asıl belirsizlik kaynağına — Epey eşleştirme skoruna (skor < 0.8 veya fallback sorgu) — bağlanır (Task 4 orchestrator).
