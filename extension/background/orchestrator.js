@@ -17,13 +17,21 @@ export function normalizeKey(title) {
 export function createOrchestrator({ cache, fetchHtml, minIntervalMs = 1500, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   let lastFetchAt = 0;
   const inflight = new Map();
+  // Farklı anahtarlı eşzamanlı politeFetch çağrıları aynı lastFetchAt'i okuyup
+  // aynı bekleme süresini hesaplayabilir (check-then-act yarışı); bunu önlemek için
+  // tüm çağrıları tek bir promise zincirinde sıraya sokuyoruz.
+  let fetchChain = Promise.resolve();
 
   // spec §8: Epey'e istekler arası makul gecikme
-  async function politeFetch(url) {
-    const wait = lastFetchAt + minIntervalMs - now();
-    if (wait > 0) await sleep(wait);
-    lastFetchAt = now();
-    return fetchHtml(url);
+  function politeFetch(url) {
+    const run = fetchChain.then(async () => {
+      const wait = lastFetchAt + minIntervalMs - now();
+      if (wait > 0) await sleep(wait);
+      lastFetchAt = now();
+      return fetchHtml(url);
+    });
+    fetchChain = run.catch(() => {}); // zincir hata ile kopmasın
+    return run;
   }
 
   async function lookup(product) {

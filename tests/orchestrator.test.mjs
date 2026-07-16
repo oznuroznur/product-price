@@ -96,3 +96,32 @@ test("fetch hatasında ok:false döner, exception sızmaz", async () => {
   const r = await orch.getComparison({ title: "Apple iPhone 15 Pro" });
   assert.equal(r.ok, false);
 });
+
+test("farklı ürünlerin eşzamanlı istekleri de throttle aralığına uyar", async () => {
+  let t = 0;
+  const fetchTimes = [];
+  const cache = createCache({ storage: fakeStorage(), now: () => t });
+  const orch = createOrchestrator({
+    cache,
+    fetchHtml: async (url) => {
+      fetchTimes.push(t);
+      return url.includes("/ara/") ? searchHtml : productHtml;
+    },
+    minIntervalMs: 1000,
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+    },
+  });
+  await Promise.all([
+    orch.getComparison({ title: "Apple iPhone 15 Pro" }),
+    orch.getComparison({ title: "Apple iPhone 13" }),
+  ]);
+  assert.ok(fetchTimes.length >= 4); // her ürün: arama + ürün sayfası
+  for (let i = 1; i < fetchTimes.length; i++) {
+    assert.ok(
+      fetchTimes[i] - fetchTimes[i - 1] >= 1000,
+      `fetch ${i} çok erken: ${fetchTimes[i] - fetchTimes[i - 1]}ms`
+    );
+  }
+});
