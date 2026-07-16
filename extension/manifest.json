@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Fiyat Karşılaştırma — Epey",
+  "version": "0.1.0",
+  "description": "Ürün sayfasında aynı ürünün diğer mağazalardaki fiyatlarını Epey verisiyle gösterir. Hiçbir kullanıcı verisi toplamaz.",
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.hepsiburada.com/*",
+        "https://www.trendyol.com/*",
+        "https://www.amazon.com.tr/*",
+        "https://www.n11.com/urun/*",
+        "https://www.teknosa.com/*",
+        "https://www.vatanbilgisayar.com/*"
+      ],
+      "js": ["content/loader.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/*.js", "content/adapters/*.js"],
+      "matches": [
+        "https://www.hepsiburada.com/*",
+        "https://www.trendyol.com/*",
+        "https://www.amazon.com.tr/*",
+        "https://www.n11.com/*",
+        "https://www.teknosa.com/*",
+        "https://www.vatanbilgisayar.com/*"
+      ]
+    }
+  ],
+  "host_permissions": ["https://www.epey.com/*"],
+  "permissions": ["storage"]
+}
