@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "CF Erişim Testi (spike)",
+  "version": "0.1.0",
+  "description": "Epey ve Cimri'ye uzantı bağlamından (service worker fetch) erişilebiliyor mu testi. Geçici teşhis aracı — yayınlanmayacak.",
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "CF Erişim Testi"
+  },
+  "host_permissions": [
+    "https://*.epey.com/*",
+    "https://*.cimri.com/*"
+  ]
+}
