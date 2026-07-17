@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>ikon üret</title>
+<body>
+<p>Bağlantılara tıklayınca PNG iner. Üçünü de <code>extension/icons/</code> içine kaydet.</p>
+<script>
+for (const size of [16, 48, 128]) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  g.fillStyle = "#0b57d0";
+  g.beginPath();
+  g.roundRect(0, 0, size, size, size * 0.22);
+  g.fill();
+  g.fillStyle = "#fff";
+  g.font = `bold ${Math.round(size * 0.62)}px system-ui, sans-serif`;
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText("₺", size / 2, size / 2 + size * 0.04);
+  const a = document.createElement("a");
+  a.download = `icon${size}.png`;
+  a.href = c.toDataURL("image/png");
+  a.textContent = `icon${size}.png indir`;
+  a.style.display = "block";
+  document.body.appendChild(a);
+}
+</script>
