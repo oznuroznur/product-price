@@ -56,3 +56,13 @@ test("renderCard mağaza adındaki HTML'i etkisizleştirir", () => {
   assert.ok(!html.includes("<img src=x"));
   assert.ok(html.includes("&lt;img"));
 });
+
+test("groupOffers sıralanmamış girdide de gerçek minimumu bulur", () => {
+  const karisik = [
+    { merchant: "A", merchantDomain: "a.com", merchantUrl: "https://a.com", seller: null, price: 114000, secondHand: false, freeShipping: true, updated: null },
+    { merchant: "B", merchantDomain: "b.com", merchantUrl: "https://b.com", seller: null, price: 67953.9, secondHand: false, freeShipping: true, updated: null },
+    { merchant: "C", merchantDomain: "c.com", merchantUrl: "https://c.com", seller: null, price: 59488.05, secondHand: true, freeShipping: true, updated: null },
+  ];
+  const g = groupOffers(karisik);
+  assert.equal(g.cheapest.price, 67953.9); // sıfırlar arasında minimum, dizi sırası değil
+});

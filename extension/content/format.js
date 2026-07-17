@@ -11,6 +11,9 @@ export function updatedText(fetchedAt, now = Date.now()) {
   return `${Math.floor(dk / 60)} saat önce güncellendi`;
 }
 
+// En ucuz teklifi gerçek minimuma göre seçer.
+const enUcuz = (list) => list.length ? list.reduce((a, b) => (b.price < a.price ? b : a), list[0]) : null;
+
 // Teklifleri sıfır/2.el olarak ayırır. "N mağazada" sayısı benzersiz mağaza
 // domain'i üzerinden (aynı mağazanın farklı satıcıları tek sayılır — spec §7).
 // "En ucuz" vurgusu sıfır ürünler arasından seçilir.
@@ -22,7 +25,7 @@ export function groupOffers(offers) {
     newOffers,
     usedOffers,
     siteCount: domains.size,
-    cheapest: newOffers[0] || usedOffers[0] || null,
+    cheapest: newOffers.length ? enUcuz(newOffers) : usedOffers.length ? enUcuz(usedOffers) : null,
   };
 }
 
