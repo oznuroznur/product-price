@@ -16,23 +16,27 @@ function run() {
   if (!product || !product.titleEl || !product.titleEl.isConnected) return;
 
   const seq = ++requestSeq;
-  chrome.runtime.sendMessage(
-    {
-      type: "FK_GET_OFFERS",
-      product: { title: product.title, sku: product.sku, approximate: product.approximate },
-    },
-    (resp) => {
-      if (chrome.runtime.lastError) return;         // SW yok/uyandırılamadı → sessiz
-      if (seq !== requestSeq) return;               // bu arada sayfa değişti
-      if (!resp || !resp.ok || !resp.data || !Array.isArray(resp.data.offers) || resp.data.offers.length === 0) return;
-      if (!product.titleEl.isConnected) return;     // başlık DOM'dan gitmiş
-      try {
-        mountBadge(product.titleEl, resp.data);
-      } catch {
-        /* sessiz */
+  try {
+    chrome.runtime.sendMessage(
+      {
+        type: "FK_GET_OFFERS",
+        product: { title: product.title, sku: product.sku, approximate: product.approximate },
+      },
+      (resp) => {
+        if (chrome.runtime.lastError) return;         // SW yok/uyandırılamadı → sessiz
+        if (seq !== requestSeq) return;               // bu arada sayfa değişti
+        if (!resp || !resp.ok || !resp.data || !Array.isArray(resp.data.offers) || resp.data.offers.length === 0) return;
+        if (!product.titleEl.isConnected) return;     // başlık DOM'dan gitmiş
+        try {
+          mountBadge(product.titleEl, resp.data);
+        } catch {
+          /* sessiz */
+        }
       }
-    }
-  );
+    );
+  } catch {
+    // uzantı yeniden yüklendi/güncellendi → "Extension context invalidated" senkron hatası, sessiz (spec §7)
+  }
 }
 
 // SPA gezinmeleri (Trendyol, n11 ürün→ürün geçişleri): URL'i hafifçe izle.

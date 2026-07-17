@@ -34,9 +34,15 @@ const CSS = `
   .foot a { color: #0b57d0; text-decoration: none; }
 `;
 
+let outsideClickListener = null;
+
 export function removeBadge() {
   const eski = document.getElementById(HOST_ID);
   if (eski) eski.remove();
+  if (outsideClickListener) {
+    document.removeEventListener("click", outsideClickListener);
+    outsideClickListener = null;
+  }
 }
 
 export function mountBadge(titleEl, data) {
@@ -71,9 +77,10 @@ export function mountBadge(titleEl, data) {
     card.hidden = !card.hidden;
   });
   card.addEventListener("click", (e) => e.stopPropagation());
-  document.addEventListener("click", () => {
+  outsideClickListener = () => {
     card.hidden = true;
-  });
+  };
+  document.addEventListener("click", outsideClickListener);
 
   titleEl.insertAdjacentElement("afterend", host);
 }
