@@ -6,6 +6,10 @@ import { cleanText, decodeHtmlEntities, jsonLdProducts } from "../extension/cont
 import { hepsiburada } from "../extension/content/adapters/hepsiburada.js";
 import { trendyol } from "../extension/content/adapters/trendyol.js";
 import { amazon } from "../extension/content/adapters/amazon.js";
+import { n11 } from "../extension/content/adapters/n11.js";
+import { teknosa } from "../extension/content/adapters/teknosa.js";
+import { vatan } from "../extension/content/adapters/vatan.js";
+import { adapterFor } from "../extension/content/adapters/index.js";
 
 function load(fixture, url) {
   const html = readFileSync(new URL(`./fixtures/adapters/${fixture}`, import.meta.url), "utf8");
@@ -74,4 +78,50 @@ test("amazon: #productTitle + /dp/ ASIN", () => {
 test("amazon: dp olmayan sayfada null", () => {
   const { document, location } = load("amazon.html", "https://www.amazon.com.tr/s?k=iphone");
   assert.equal(amazon.extractProduct(document, location), null);
+});
+
+test("n11: başlık h1'den (SEO'lu JSON-LD name'den değil), sku JSON-LD'den", () => {
+  const { document, location } = load(
+    "n11.html",
+    "https://www.n11.com/urun/apple-iphone-15-128-gb-apple-turkiye-garantili-43821353"
+  );
+  const p = n11.extractProduct(document, location);
+  assert.equal(p.title, "Apple iPhone 15 128 GB (Apple Türkiye Garantili)");
+  assert.equal(p.sku, "127272069922");
+});
+
+test("n11: /urun/ dışı sayfada null", () => {
+  const { document, location } = load("n11.html", "https://www.n11.com/arama?q=iphone");
+  assert.equal(n11.extractProduct(document, location), null);
+});
+
+test("teknosa: h1'deki whitespace kirliliği temizlenir, sku URL'den", () => {
+  const { document, location } = load(
+    "teknosa.html",
+    "https://www.teknosa.com/apple-iphone-17-256gb-beyaz-akilli-telefon-p-100000058783"
+  );
+  const p = teknosa.extractProduct(document, location);
+  assert.equal(p.title, "Apple iPhone 17 256GB Beyaz Akıllı Telefon");
+  assert.equal(p.sku, "100000058783");
+});
+
+test("vatan: JSON-LD name'deki HTML entity'ler çözülür", () => {
+  const { document, location } = load(
+    "vatan.html",
+    "https://www.vatanbilgisayar.com/iphone-17-akilli-telefon.html"
+  );
+  const p = vatan.extractProduct(document, location);
+  assert.equal(p.title, "iPhone 17 256 GB Akıllı Telefon Siyah");
+  assert.equal(p.sku, "153221");
+  assert.equal(p.approximate, false);
+});
+
+test("adapterFor hostname'i doğru adapter'a eşler", () => {
+  assert.equal(adapterFor("www.hepsiburada.com"), hepsiburada);
+  assert.equal(adapterFor("www.trendyol.com"), trendyol);
+  assert.equal(adapterFor("www.amazon.com.tr"), amazon);
+  assert.equal(adapterFor("www.n11.com"), n11);
+  assert.equal(adapterFor("www.teknosa.com"), teknosa);
+  assert.equal(adapterFor("www.vatanbilgisayar.com"), vatan);
+  assert.equal(adapterFor("www.baskasite.com"), null);
 });
