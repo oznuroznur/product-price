@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   parsePriceTL, buildSearchUrl, buildQueries, parseSearchResults,
-  scoreMatch, searchEpeyInHtml, parseOffers, MIN_SCORE,
+  scoreMatch, searchEpeyInHtml, parseOffers, MIN_SCORE, fetchHtml,
 } from "../extension/background/epey.js";
 
 const searchHtml = readFileSync(new URL("./fixtures/epey-search.html", import.meta.url), "utf8");
@@ -72,4 +72,25 @@ test("parseOffers gerçek ürün HTML'inden teklifleri alanlarıyla çıkarır",
   assert.equal(ptt.seller, "BVBMARKET");
   assert.equal(ptt.secondHand, false);
   assert.ok(ptt.updated.includes("önce"));
+});
+
+test("parseOffers http(s) olmayan data-link'li teklifi atlar", () => {
+  const kotuHtml = `
+    <div id="fiyatlar" class="tab"><div class="fiyat fiyat-1">
+    <a rel="nofollow" id="1" class="git c1" data-link="${encodeURIComponent("javascript:alert(1)")}" data-jplist-item data-id="1" data-pos="1" title="Kotu Magaza Urun fiyatı" target="_blank">
+      <span class="urun_adi">Urun</span>
+      <span class="urun_fiyat"> 100,00 TL <span class="urun_fiyat_sort" style="display:none">10000</span></span>
+    </a>
+    <a rel="nofollow" id="2" class="git c2" data-link="${encodeURIComponent("https://www.pttavm.com/urun")}" data-jplist-item data-id="2" data-pos="2" title="PTT AVM Urun fiyatı" target="_blank">
+      <span class="urun_adi">Urun</span>
+      <span class="urun_fiyat"> 200,00 TL <span class="urun_fiyat_sort" style="display:none">20000</span></span>
+    </a>
+    </div></div>`;
+  const offers = parseOffers(kotuHtml);
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0].merchantDomain, "pttavm.com");
+});
+
+test("fetchHtml epey.com dışına isteği reddeder", async () => {
+  await assert.rejects(() => fetchHtml("https://evil.example/x"), /İzin verilmeyen URL/);
 });

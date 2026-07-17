@@ -127,10 +127,14 @@ export function parseOffers(html) {
   while ((m = re.exec(section))) {
     const [, dataLink, title, block] = m;
     const merchantUrl = decodeURIComponent(dataLink);
-    let domain = null;
+    let domain;
     try {
-      domain = new URL(merchantUrl).hostname.replace(/^www\./, "");
-    } catch {}
+      const u = new URL(merchantUrl);
+      if (u.protocol !== "http:" && u.protocol !== "https:") continue; // güvenilmez şema → teklifi atla
+      domain = u.hostname.replace(/^www\./, "");
+    } catch {
+      continue; // parse edilemeyen URL → teklifi atla
+    }
     const logoAlt = (block.match(/<img src="https:\/\/resim\.epey\.com\/site\/[^"]*" alt="([^"]*)"/) || [])[1];
     const priceBlock = (block.match(/class="urun_fiyat">([\s\S]*?)<span class="urun_fiyat_sort"/) || [])[1] || "";
     const price = parsePriceTL(priceBlock);
@@ -167,6 +171,7 @@ function guessMerchantWordCount(title, logoAlt) {
 
 // Yalnızca uzantı bağlamında çalışır.
 export async function fetchHtml(url) {
+  if (!url.startsWith(BASE + "/")) throw new Error(`İzin verilmeyen URL (yalnızca Epey): ${url}`);
   const res = await fetch(url, { redirect: "follow", headers: { accept: "text/html" } });
   if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`);
   return res.text();
